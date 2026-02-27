@@ -1,78 +1,59 @@
 from modules.speech_to_text import listen
-from modules.text_to_speech import is_speaking
-from modules.text_to_speech import speak
 from modules.llm import ask_llm
 from modules.vision import ask_vision
 from modules.chroma_memory import save_memory, search_memory
-
-import time
-
-# защита от реакции на собственный голос
-last_response_time = 0
-IGNORE_SECONDS = 3
-
-
-def should_ignore():
-    global last_response_time
-    return time.time() - last_response_time < IGNORE_SECONDS
+import modules.text_to_speech as tts
 
 
 def main():
-
-    global last_response_time
-
-    speak("Постоянный режим активирован")
+    tts.speak("Постоянный режим активирован")
 
     while True:
-
-        text = listen().strip()
-
+        text = (listen() or "").strip()
         if not text:
             continue
 
         print("You:", text)
 
-        # игнорируем если ассистент только что говорил
-        if should_ignore():
-            continue
-
-        # команды выхода
         if text.lower() in ["выход", "стоп", "закройся"]:
-            speak("Выключаюсь")
+            tts.speak("Выключаюсь")
             break
 
-        # загружаем память
-        relevant = search_memory(text, limit=6)
-        context = "\n".join(relevant)
+        try:
+            relevant = search_memory(text, limit=6)
+            context = "\n".join(relevant) if relevant else ""
+        except Exception as e:
+            print("Memory error:", repr(e))
+            context = ""
 
-        # если вопрос про экран
-        if any(word in text.lower() for word in ["экран", "видишь", "покажи"]):
+        try:
+            if any(word in text.lower() for word in ["экран", "видишь", "покажи"]):
+                answer = ask_vision(text)
+            else:
+                prompt = (
+                    "Ты локальный голосовой ассистент.\n\n"
+                    "Релевантные воспоминания (это факты из прошлых разговоров, используй их):\n"
+                    f"{context}\n\n"
+                    f"Пользователь: {text}\n\n"
+                    "Ответь естественно и по делу."
+                )
+                answer = ask_llm(prompt)
+        except Exception as e:
+            print("LLM/Vision error:", repr(e))
+            answer = f"Ошибка при обработке запроса: {repr(e)}"
 
-            answer = ask_vision(text)
+        answer = (answer or "").strip()
+        if not answer:
+            answer = "Я не получил ответ. Проверь, запущена ли Ollama и правильна ли модель."
 
-        else:
+        try:
+            save_memory("User", text)
+            save_memory("Assistant", answer)
+        except Exception as e:
+            print("Save memory error:", repr(e))
 
-            prompt = f"""
-            Ты локальный голосовой ассистент.
-
-            Релевантные воспоминания (это факты из прошлых разговоров, используй их):
-            {context}
-
-            Пользователь: {text}
-
-            Ответь естественно и по делу.
-            """
-            answer = ask_llm(prompt)
-
-        # сохраняем память
-        save_memory("User", text)
-        save_memory("Assistant", answer)
-
-        # говорим
-        speak(answer)
-
-        # обновляем время ответа
-        last_response_time = time.time()
+        print("Jarvis:", answer)
+        tts.speak(answer)
 
 
 if __name__ == "__main__":

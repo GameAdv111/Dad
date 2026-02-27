@@ -1,66 +1,85 @@
-import queue
+import subprocess
+import tempfile
+import os
 import threading
-import pyttsx3
-import time
+import queue
+import winsound
 
-_engine = pyttsx3.init()
-_engine.setProperty("rate", 170)
+MODEL_PATH = os.path.join("models", "piper", "ru_RU-irina-medium.onnx")
 
-# очередь фраз на озвучку
-_q: "queue.Queue[str]" = queue.Queue()
-
-# флаг: сейчас говорит (можно использовать для подавления self-listen)
+_q = queue.Queue()
 is_speaking = False
 
-def _tts_worker():
+
+def _worker():
     global is_speaking
+    print("TTS worker started (Piper + winsound)")
+
     while True:
-        text = _q.get()  # блокируется, пока не появится текст
+        text = _q.get()
         if text is None:
+            _q.task_done()
             break
+
+        wav_path = None
 
         try:
             is_speaking = True
-            print("Jarvis:", text)
-            _engine.say(text)
-            _engine.runAndWait()
+            text = str(text).strip()
+            if not text:
+                continue
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
+                wav_path = f.name
+
+            # ✅ ВАЖНО: Piper читает stdin, поэтому даём bytes UTF-8 + \n
+            result = subprocess.run(
+                ["piper", "--model", MODEL_PATH, "--output_file", wav_path],
+                input=(text + "\n").encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            if result.returncode != 0:
+                err = result.stderr.decode("utf-8", errors="replace")
+                print("Piper error:", err)
+                continue
+
+            if not os.path.exists(wav_path) or os.path.getsize(wav_path) == 0:
+                print("TTS error: wav not created")
+                continue
+
+            print("Jarvis(TTS):", text)
+            winsound.PlaySound(wav_path, winsound.SND_FILENAME)
+
         except Exception as e:
-            print("TTS error:", e)
+            print("TTS exception:", repr(e))
+
         finally:
             is_speaking = False
-            # маленькая пауза, чтобы микрофон не схватил хвост
-            time.sleep(0.05)
             _q.task_done()
 
-# запускаем один раз
-_thread = threading.Thread(target=_tts_worker, daemon=True)
-_thread.start()
+            if wav_path and os.path.exists(wav_path):
+                try:
+                    os.remove(wav_path)
+                except Exception:
+                    pass
 
-def set_voice_by_index(index: int):
-    """Опционально: выбрать голос по индексу."""
-    voices = _engine.getProperty("voices")
-    if 0 <= index < len(voices):
-        _engine.setProperty("voice", voices[index].id)
 
-def list_voices():
-    """Опционально: вывести список голосов в консоль."""
-    voices = _engine.getProperty("voices")
-    for i, v in enumerate(voices):
-        print(i, getattr(v, "name", "Unknown"), v.id)
+threading.Thread(target=_worker, daemon=False).start()
+
 
 def speak(text: str):
-    """Неблокирующая озвучка: кладёт текст в очередь."""
-    if not text:
-        return
-    _q.put(text)
+    if text:
+        _q.put(text)
+
 
 def speak_blocking(text: str):
-    """Блокирующая озвучка: дождаться, пока фраза будет произнесена."""
     if not text:
         return
     _q.put(text)
     _q.join()
 
+
 def stop_tts():
-    """Остановить поток TTS (обычно не нужно)."""
     _q.put(None)
