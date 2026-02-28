@@ -1,5 +1,3 @@
-from modules.text_to_speech import speak_blocking
-speak_blocking("Тест один")
-speak_blocking("Тест два")
-speak_blocking("Тест три")
-print("done")
+import modules.text_to_speech as tts
+tts.speak_blocking("Привет. Это тест пипера.")
+tts.speak_blocking("Если ты это слышишь, всё работает.")
